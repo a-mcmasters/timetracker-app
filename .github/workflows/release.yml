@@ -1,0 +1,35 @@
+# Publishes a GitHub Release with TimeTracker.apk attached whenever a version tag
+# such as v1.5 is pushed. The release notes are the tag's message.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the APK matches the tag
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          NAME=$(grep -o 'android:versionName="[^"]*"' android/AndroidManifest.xml | cut -d'"' -f2)
+          test -f TimeTracker.apk || { echo "TimeTracker.apk is missing"; exit 1; }
+          [ "v$NAME" = "$TAG" ] || { echo "Tag $TAG does not match app version $NAME"; exit 1; }
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          git tag -l --format='%(contents)' "$TAG" > notes.md
+          gh release create "$TAG" TimeTracker.apk \
+            --title "Time Tracker ${TAG#v}" \
+            --notes-file notes.md \
+            --latest

@@ -6,7 +6,7 @@ A small time tracker for language learning (or anything else): start a timer, ta
 you're doing, and see your history and statistics. It runs in any browser and as an
 Android app, works offline, and keeps all data on your device.
 
-**[Download the Android app (TimeTracker.apk)](TimeTracker.apk)**
+**[Download the latest Android app (TimeTracker.apk)](https://github.com/a-mcmasters/timetracker-app/releases/latest/download/TimeTracker.apk)** · [All releases and what's new](https://github.com/a-mcmasters/timetracker-app/releases)
 
 ## Screenshots
 
@@ -63,4 +63,15 @@ Keep your copy safe. Updates must be signed with the same key, or Android will r
 install them over the existing app. If the file is missing, `build.sh` creates a new key,
 and APKs built with it can't update the old install.
 
-When you release a new version, raise `versionCode` and `versionName` in `android/AndroidManifest.xml`.
+### Releasing a new version
+
+1. Raise `versionCode` and `versionName` in `android/AndroidManifest.xml`, then rebuild the APK.
+2. Commit, then tag the version with the release notes as the tag message, and push the tag:
+
+   ```sh
+   git tag -a v1.6 -m "What's new in this version"
+   git push origin v1.6
+   ```
+
+The **Release** workflow (`.github/workflows/release.yml`) then publishes a GitHub Release
+with `TimeTracker.apk` attached. It first checks that the tag matches the app version.
