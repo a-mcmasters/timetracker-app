@@ -1,8 +1,19 @@
 # Time Tracker
 
+![Time Tracker: track every hour of your language learning](docs/screenshots/banner.png)
+
 A small time tracker for language learning (or anything else): start a timer, tag what
 you're doing, and see your history and statistics. It runs in any browser and as an
 Android app, works offline, and keeps all data on your device.
+
+**[Download the Android app (TimeTracker.apk)](TimeTracker.apk)**
+
+## Screenshots
+
+| Timer | Smart tags | Statistics | Activity |
+|:---:|:---:|:---:|:---:|
+| <img src="docs/screenshots/timer.png" width="200" alt="Timer running with today's history"> | <img src="docs/screenshots/tags.png" width="200" alt="Tags filling in the task name"> | <img src="docs/screenshots/statistics.png" width="200" alt="Statistics with totals and a 30-day chart"> | <img src="docs/screenshots/activity.png" width="200" alt="Year activity heatmap and time per tag"> |
+| Start, pause and stop with one tap. History is grouped by day. | Pick *Watching* and *TV Series* and the name fills itself in. | Total time, sessions, records and the last 30 days. | A year of study at a glance, plus time per tag. |
 
 ## Features
 
