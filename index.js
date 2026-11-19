@@ -102,20 +102,60 @@ const pillsHtml = (tagIds) =>
     .map((t) => `<span class="pill" style="--c:${t.color}">${esc(t.name)}</span>`).join("");
 
 // ---------- auto-filled task names ----------
-// "Watching" + "YouTube" -> "Watching YouTube"; "Listening" + "Audiobook" -> "Listening to Audiobook";
-// "Watching" + "Mining" + "Anime" -> "Watching & Mining Anime".
+// "Watching" + "YouTube"   -> "Watching YouTube"
+// "Reading" + "Book"       -> "Reading a book"
+// "Listening" + "Audiobook" -> "Listening to an audiobook"
+// "Reading" + "News"       -> "Reading the news"
+// "Watching" + "Mining" + "TV Series" -> "Watching & mining a TV series"
 const joinNames = (names) =>
   names.length <= 1 ? names.join("") : names.slice(0, -1).join(", ") + " & " + names[names.length - 1];
 
+// Which article a content tag gets when its setting is "auto". Anything not listed is
+// treated as a countable thing and gets "a"/"an".
+const AUTO_ARTICLES = {
+  news: "the", radio: "the",
+  youtube: "none", netflix: "none", twitch: "none", tv: "none", anime: "none", manga: "none",
+  music: "none", comics: "none", subtitles: "none", flashcards: "none", anki: "none", duolingo: "none",
+};
+const TAG_ARTICLES = [["auto", "Automatic"], ["a", "a / an"], ["the", "the"], ["none", "none"]];
+
+// Word placed after an activity when its "joining word" is left on automatic.
+const AUTO_JOINERS = { listening: "to", talking: "to", "talking to": "", chatting: "with" };
+const joinerFor = (tag) =>
+  tag.joiner != null ? tag.joiner.trim() : AUTO_JOINERS[tag.name.trim().toLowerCase()] || "";
+
+function articleFor(tag) {
+  const setting = tag.article || "auto";
+  return setting === "auto" ? AUTO_ARTICLES[tag.name.trim().toLowerCase()] || "a" : setting;
+}
+
+// Lower-case ordinary capitalised words ("Book" -> "book") but keep names and
+// acronyms with other capitals as they are ("YouTube", "TV").
+const softLower = (text) => text.replace(/\b[A-Z][a-z]+\b/g, (w) => w.toLowerCase());
+
+// Common words that take no article but still read better in lower case.
+const LOWERCASE_NOUNS = new Set(["anime", "manga", "music", "comics", "subtitles", "flashcards", "series", "shows", "films", "movies", "games"]);
+
+function withArticle(tag) {
+  const name = tag.name.trim();
+  const art = articleFor(tag);
+  // With no article it is probably a name (Netflix, Duolingo): keep its capitals.
+  if (art === "none") return LOWERCASE_NOUNS.has(name.toLowerCase()) ? name.toLowerCase() : name;
+  const noun = softLower(name);
+  if (art === "the") return "the " + noun;
+  return (/^[aeiou]/i.test(noun) ? "an " : "a ") + noun;
+}
+
 function autoTitle(tagIds) {
-  const tags = tagIds.map(tagById).filter(Boolean);
-  const acts = tags.filter(isActivity).map((t) => t.name);
-  const things = tags.filter((t) => !isActivity(t)).map((t) => t.name);
-  if (!acts.length) return joinNames(things);
+  const order = state.tags; // keep tags in picker order regardless of click order
+  const tags = tagIds.map(tagById).filter(Boolean).sort((a, b) => byKind(a, b) || order.indexOf(a) - order.indexOf(b));
+  const actTags = tags.filter(isActivity);
+  const acts = actTags.map((t, i) => (i === 0 ? t.name : softLower(t.name)));
+  const things = tags.filter((t) => !isActivity(t));
+  if (!acts.length) return joinNames(things.map((t) => t.name));
   if (!things.length) return joinNames(acts);
-  const lastAct = acts[acts.length - 1].toLowerCase();
-  const joiner = lastAct === "listening" ? " to " : " ";
-  return joinNames(acts) + joiner + joinNames(things);
+  const joiner = joinerFor(actTags[actTags.length - 1]);
+  return joinNames(acts) + " " + (joiner ? joiner + " " : "") + joinNames(things.map(withArticle));
 }
 
 // Fill a title box from the chosen tags, but only if it is empty or still holds
@@ -285,15 +325,39 @@ function renderStats() {
 
   renderHeatmap(perDay);
 
-  // Last 30 days chart
+  // Last 30 days chart, each bar stacked by activity (or content tag if it has no activity)
   const today = startOfDay(Date.now());
+  const order = projectTags(); // activities first, in the same order as the tag picker
+  const groupOf = (e) => {
+    const tags = (e.tagIds || []).map(tagById).filter(Boolean).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    return tags.find(isActivity) || tags[0] || null; // null = untagged
+  };
+  const perDayGroup = new Map(); // day -> Map(tag|null -> ms)
+  for (const e of spans) {
+    const k = startOfDay(e.start);
+    if (!perDayGroup.has(k)) perDayGroup.set(k, new Map());
+    const g = perDayGroup.get(k), tag = groupOf(e);
+    g.set(tag, (g.get(tag) || 0) + e.ms);
+  }
+  const rank = (tag) => (tag ? order.indexOf(tag) : order.length);
   const days = [];
-  for (let i = 29; i >= 0; i--) { const d = addDays(today, -i); days.push({ d, ms: perDay.get(d) || 0 }); }
+  for (let i = 29; i >= 0; i--) { const d = addDays(today, -i); days.push({ d, ms: perDay.get(d) || 0, groups: perDayGroup.get(d) || new Map() }); }
   const max = Math.max(...days.map((x) => x.ms), 1);
+  const used = new Set();
   $("chart").innerHTML = days
-    .map(({ d, ms }) => `<div class="chart-col" data-tip="${fmtShortDate(d)} — ${ms ? fmtDur(ms) : "nothing"}"><div class="chart-bar" style="height:${ms ? Math.max(2, (ms / max) * 100) : 0}%"></div></div>`)
+    .map(({ d, ms, groups }) => {
+      const parts = [...groups].sort((a, b) => rank(a[0]) - rank(b[0]));
+      parts.forEach(([tag]) => used.add(tag));
+      const segs = parts.map(([tag, t]) =>
+        `<div class="seg" style="flex:${t};background:${tag ? tag.color : "#777"}"></div>`).join("");
+      const detail = parts.map(([tag, t]) => `${tag ? tag.name : "No tag"} ${fmtDur(t)}`).join(" · ");
+      const tip = `${fmtShortDate(d)} — ${ms ? fmtDur(ms) : "nothing"}${parts.length > 1 ? "\n" + detail : ""}`;
+      return `<div class="chart-col" data-tip="${esc(tip)}"><div class="chart-bar" style="height:${ms ? Math.max(2, (ms / max) * 100) : 0}%">${segs}</div></div>`;
+    })
     .join("");
   $("chart-from").textContent = fmtShortDate(days[0].d);
+  $("chart-legend").innerHTML = [...used].sort((a, b) => rank(a) - rank(b))
+    .map((tag) => `<span><i style="background:${tag ? tag.color : "#777"}"></i>${tag ? esc(tag.name) : "No tag"}</span>`).join("");
 
   // Time per tag
   const perTag = new Map();
@@ -476,14 +540,42 @@ function editTag(t) {
                <label><input type="radio" name="kind" value="content" ${t?.kind === "activity" ? "" : "checked"}> Content <span class="muted">(YouTube, Audiobook…)</span></label>
              </div>
            </div>
+           <label class="field" id="m-joiner-field">Word after it in task names
+             <input id="m-joiner" class="input" maxlength="20" placeholder="Automatic" value="${esc(t?.joiner ?? "")}">
+             <span class="muted" id="m-joiner-preview"></span>
+           </label>
+           <label class="field" id="m-article-field">Word before it in task names
+             <select id="m-article" class="input">${TAG_ARTICLES.map(([v, l]) =>
+               `<option value="${v}" ${(t?.article || "auto") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+             <span class="muted" id="m-article-preview"></span>
+           </label>
            <div class="field">Color ${swatchHtml(t?.color || COLORS[Math.floor(Math.random() * COLORS.length)])}</div>`,
-    onOpen: wireSwatches,
+    onOpen: () => {
+      wireSwatches();
+      // Live preview of how the tag reads in a task name; only content tags get an article.
+      const update = () => {
+        const kind = $("m-kind").querySelector("input:checked").value;
+        $("m-article-field").classList.toggle("hidden", kind === "activity");
+        $("m-joiner-field").classList.toggle("hidden", kind !== "activity");
+        const name = $("m-name").value.trim();
+        $("m-article-preview").textContent = `e.g. "Reading ${withArticle({ name: name || "Book", article: $("m-article").value })}"`;
+        const typed = $("m-joiner").value.trim();
+        const j = joinerFor({ name: name || "Watching", joiner: typed || null });
+        $("m-joiner-preview").textContent =
+          `e.g. "${name || "Watching"}${j ? " " + j : ""} a podcast"` + (typed ? "" : " — leave empty for automatic");
+      };
+      ["m-name", "m-article", "m-kind", "m-joiner"].forEach((id) => $(id).addEventListener("input", update));
+      $("m-kind").addEventListener("change", update);
+      update();
+    },
     onOk: () => {
       const name = $("m-name").value.trim();
       if (!name) return false;
       const kind = $("m-kind").querySelector("input:checked").value;
-      if (t) Object.assign(t, { name, kind, color: pickedColor() });
-      else state.tags.push({ id: uid(), projectId: state.currentProjectId, name, kind, color: pickedColor() });
+      const article = $("m-article").value;
+      const joiner = $("m-joiner").value.trim() || null; // empty = automatic
+      if (t) Object.assign(t, { name, kind, article, joiner, color: pickedColor() });
+      else state.tags.push({ id: uid(), projectId: state.currentProjectId, name, kind, article, joiner, color: pickedColor() });
     },
     onDelete: t ? () => {
       if (!confirm(`Delete tag "${t.name}"? It will be removed from all sessions.`)) return false;
@@ -643,8 +735,9 @@ $("chart").addEventListener("mousemove", (ev) => {
   const tip = $("chart-tip");
   if (!col) return tip.classList.add("hidden");
   tip.textContent = col.dataset.tip;
-  tip.style.left = `${col.offsetLeft + col.offsetWidth / 2}px`;
-  tip.classList.remove("hidden");
+  tip.classList.remove("hidden"); // must be visible before its width can be measured
+  const half = tip.offsetWidth / 2, wrapW = $("chart").offsetWidth;
+  tip.style.left = `${Math.min(Math.max(col.offsetLeft + col.offsetWidth / 2, half), wrapW - half)}px`;
 });
 $("chart").addEventListener("mouseleave", () => $("chart-tip").classList.add("hidden"));
 

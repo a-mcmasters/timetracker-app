@@ -23,14 +23,16 @@ Android app, works offline, and keeps all data on your device.
   - **Activities** (Watching, Listening, Reading, Mining…) are listed first.
   - **Content** (YouTube, Podcast, Audiobook, Book…) follows.
 
-  Picking tags fills in the task name, e.g. *Watching YouTube* or *Listening to Audiobook*.
-  Text you type yourself is never overwritten.
+  Picking tags builds the task name from them: *Watching YouTube*, *Reading a book*,
+  *Listening to an audiobook*, *Reading the news*. Each content tag can take "a/an", "the"
+  or no article, and each activity can have a word after it ("to", "about"…). Sensible
+  defaults are chosen automatically. Text you type yourself is never overwritten.
 - **Timer** with pause and resume, editing, and a floating mini timer. It keeps counting
   while the app is closed.
 - **History** grouped by day, with continue, edit and delete, plus manual entries.
 - **Statistics:**
   - Total time, sessions, longest session and day record.
-  - A 30-day chart and time per tag.
+  - A 30-day chart, colour-coded by activity, and time per tag.
   - A GitHub-style **activity heatmap** for the last 12 months or any year, with streaks.
 - **CSV export** of a project.
 
