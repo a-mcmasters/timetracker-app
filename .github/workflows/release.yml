@@ -1,8 +1,12 @@
-# Publishes a GitHub Release with TimeTracker.apk attached whenever a version tag
-# such as v1.5 is pushed. The release notes are the tag's message.
+# Publishes a GitHub Release with TimeTracker.apk attached.
+#
+# Run it from the Actions tab ("Run workflow"), or push a version tag such as v1.6.
+# The version comes from android/AndroidManifest.xml, and the release notes from
+# docs/releases/v<version>.md.
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags: ["v*"]
 
@@ -15,21 +19,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check the APK matches the tag
+      - name: Work out the version
         run: |
-          TAG="${GITHUB_REF_NAME}"
           NAME=$(grep -o 'android:versionName="[^"]*"' android/AndroidManifest.xml | cut -d'"' -f2)
+          TAG="v$NAME"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$TAG" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match app version $NAME"; exit 1
+          fi
           test -f TimeTracker.apk || { echo "TimeTracker.apk is missing"; exit 1; }
-          [ "v$NAME" = "$TAG" ] || { echo "Tag $TAG does not match app version $NAME"; exit 1; }
+          test -f "docs/releases/$TAG.md" || { echo "Release notes docs/releases/$TAG.md are missing"; exit 1; }
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
 
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
-          git tag -l --format='%(contents)' "$TAG" > notes.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; bump versionName for a new release."; exit 1
+          fi
           gh release create "$TAG" TimeTracker.apk \
+            --target "$GITHUB_SHA" \
             --title "Time Tracker ${TAG#v}" \
-            --notes-file notes.md \
+            --notes-file "docs/releases/$TAG.md" \
             --latest

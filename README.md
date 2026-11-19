@@ -66,12 +66,12 @@ and APKs built with it can't update the old install.
 ### Releasing a new version
 
 1. Raise `versionCode` and `versionName` in `android/AndroidManifest.xml`, then rebuild the APK.
-2. Commit, then tag the version with the release notes as the tag message, and push the tag:
-
-   ```sh
-   git tag -a v1.6 -m "What's new in this version"
-   git push origin v1.6
-   ```
+2. Write the release notes in `docs/releases/v<version>.md` (e.g. `docs/releases/v1.6.md`).
+3. Commit and push, then open **Actions → Release → Run workflow** on GitHub.
 
 The **Release** workflow (`.github/workflows/release.yml`) then publishes a GitHub Release
-with `TimeTracker.apk` attached. It first checks that the tag matches the app version.
+with `TimeTracker.apk` attached. Pushing a tag such as `v1.6` does the same.
+
+## License
+
+[MIT](LICENSE): free to use, change and share, as long as the copyright notice is kept.
