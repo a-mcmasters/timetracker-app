@@ -110,40 +110,56 @@ const pillsHtml = (tagIds) =>
 const joinNames = (names) =>
   names.length <= 1 ? names.join("") : names.slice(0, -1).join(", ") + " & " + names[names.length - 1];
 
-// Which article a content tag gets when its setting is "auto". Anything not listed is
-// treated as a countable thing and gets "a"/"an".
-const AUTO_ARTICLES = {
-  news: "the", radio: "the",
-  youtube: "none", netflix: "none", twitch: "none", tv: "none", anime: "none", manga: "none",
-  music: "none", comics: "none", subtitles: "none", flashcards: "none", anki: "none", duolingo: "none",
-};
-const TAG_ARTICLES = [["auto", "Automatic"], ["a", "a / an"], ["the", "the"], ["none", "none"]];
+// The wording is worked out from the tag names alone, using a few English rules:
+//
+// Word after an activity: verbs that need a preposition before an object get one,
+// judged by the activity's last word ("OCR Mining" -> "mining").
+const PREPOSITION_VERBS = { listening: "to", talking: "to", looking: "at", chatting: "with", speaking: "with" };
+const joinerFor = (activityName) => PREPOSITION_VERBS[activityName.trim().split(/\s+/).pop().toLowerCase()] || "";
 
-// Word placed after an activity when its "joining word" is left on automatic.
-const AUTO_JOINERS = { listening: "to", talking: "to", "talking to": "", chatting: "with" };
-const joinerFor = (tag) =>
-  tag.joiner != null ? tag.joiner.trim() : AUTO_JOINERS[tag.name.trim().toLowerCase()] || "";
+// Article before a content tag:
+//  - names with a capital inside a word (YouTube, iTunes) or known services -> none
+//  - plurals (comics, videos) and uncountable things (anime, music) -> none
+//  - news, radio -> "the"
+//  - everything else is a countable thing -> "a" or "an", by its first sound
+const SERVICES = new Set(["netflix", "twitch", "spotify", "duolingo", "anki", "reddit", "discord", "tiktok", "instagram", "twitter", "facebook", "disney+", "hbo", "prime video", "google"]);
+const UNCOUNTABLE = new Set(["anime", "manga", "music", "tv", "television", "media", "content", "homework", "grammar", "vocabulary", "news", "radio", "reading", "audio", "netflix"]);
+const THE_NOUNS = new Set(["news", "radio"]);
+const SINGULAR_S = /(series|news|ss|us|is|chess)$/; // look plural but aren't
 
-function articleFor(tag) {
-  const setting = tag.article || "auto";
-  return setting === "auto" ? AUTO_ARTICLES[tag.name.trim().toLowerCase()] || "a" : setting;
+function articleKind(name) {
+  const lower = name.trim().toLowerCase();
+  const last = lower.split(/\s+/).pop();
+  if (THE_NOUNS.has(last)) return "the";
+  if (/[a-z][A-Z]/.test(name) || SERVICES.has(lower)) return "none"; // a brand or name
+  if (UNCOUNTABLE.has(last)) return "none";
+  if (/s$/.test(last) && !SINGULAR_S.test(last)) return "none"; // plural
+  return "a";
+}
+
+// "an" before a vowel sound: "an audiobook", "an hour", "an NHK show"; "a" for
+// a consonant sound even if spelled with a vowel: "a user guide", "a one-shot".
+function aOrAn(phrase) {
+  const w = phrase.split(/\s+/)[0];
+  if (/^[A-Z]{2,}$/.test(w)) return /^[AEFHILMNORSX]/.test(w) ? "an" : "a"; // acronym, read letter by letter
+  const l = w.toLowerCase();
+  if (/^(hour|honest|honou?r|heir)/.test(l)) return "an";
+  if (/^(uni|use|usu|ute|euro|eu|one|once|ur)/.test(l)) return "a";
+  return /^[aeiou]/.test(l) ? "an" : "a";
 }
 
 // Lower-case ordinary capitalised words ("Book" -> "book") but keep names and
-// acronyms with other capitals as they are ("YouTube", "TV").
+// acronyms as they are ("YouTube", "TV").
 const softLower = (text) => text.replace(/\b[A-Z][a-z]+\b/g, (w) => w.toLowerCase());
-
-// Common words that take no article but still read better in lower case.
-const LOWERCASE_NOUNS = new Set(["anime", "manga", "music", "comics", "subtitles", "flashcards", "series", "shows", "films", "movies", "games"]);
 
 function withArticle(tag) {
   const name = tag.name.trim();
-  const art = articleFor(tag);
-  // With no article it is probably a name (Netflix, Duolingo): keep its capitals.
-  if (art === "none") return LOWERCASE_NOUNS.has(name.toLowerCase()) ? name.toLowerCase() : name;
-  const noun = softLower(name);
-  if (art === "the") return "the " + noun;
-  return (/^[aeiou]/i.test(noun) ? "an " : "a ") + noun;
+  const kind = articleKind(name);
+  const isName = /[a-z][A-Z]/.test(name) || SERVICES.has(name.toLowerCase());
+  const noun = isName ? name : softLower(name);
+  if (kind === "none") return noun;
+  if (kind === "the") return "the " + noun;
+  return aOrAn(noun) + " " + noun;
 }
 
 function autoTitle(tagIds) {
@@ -154,7 +170,7 @@ function autoTitle(tagIds) {
   const things = tags.filter((t) => !isActivity(t));
   if (!acts.length) return joinNames(things.map((t) => t.name));
   if (!things.length) return joinNames(acts);
-  const joiner = joinerFor(actTags[actTags.length - 1]);
+  const joiner = joinerFor(actTags[actTags.length - 1].name);
   return joinNames(acts) + " " + (joiner ? joiner + " " : "") + joinNames(things.map(withArticle));
 }
 
@@ -540,42 +556,14 @@ function editTag(t) {
                <label><input type="radio" name="kind" value="content" ${t?.kind === "activity" ? "" : "checked"}> Content <span class="muted">(YouTube, Audiobook…)</span></label>
              </div>
            </div>
-           <label class="field" id="m-joiner-field">Word after it in task names
-             <input id="m-joiner" class="input" maxlength="20" placeholder="Automatic" value="${esc(t?.joiner ?? "")}">
-             <span class="muted" id="m-joiner-preview"></span>
-           </label>
-           <label class="field" id="m-article-field">Word before it in task names
-             <select id="m-article" class="input">${TAG_ARTICLES.map(([v, l]) =>
-               `<option value="${v}" ${(t?.article || "auto") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
-             <span class="muted" id="m-article-preview"></span>
-           </label>
            <div class="field">Color ${swatchHtml(t?.color || COLORS[Math.floor(Math.random() * COLORS.length)])}</div>`,
-    onOpen: () => {
-      wireSwatches();
-      // Live preview of how the tag reads in a task name; only content tags get an article.
-      const update = () => {
-        const kind = $("m-kind").querySelector("input:checked").value;
-        $("m-article-field").classList.toggle("hidden", kind === "activity");
-        $("m-joiner-field").classList.toggle("hidden", kind !== "activity");
-        const name = $("m-name").value.trim();
-        $("m-article-preview").textContent = `e.g. "Reading ${withArticle({ name: name || "Book", article: $("m-article").value })}"`;
-        const typed = $("m-joiner").value.trim();
-        const j = joinerFor({ name: name || "Watching", joiner: typed || null });
-        $("m-joiner-preview").textContent =
-          `e.g. "${name || "Watching"}${j ? " " + j : ""} a podcast"` + (typed ? "" : " — leave empty for automatic");
-      };
-      ["m-name", "m-article", "m-kind", "m-joiner"].forEach((id) => $(id).addEventListener("input", update));
-      $("m-kind").addEventListener("change", update);
-      update();
-    },
+    onOpen: wireSwatches,
     onOk: () => {
       const name = $("m-name").value.trim();
       if (!name) return false;
       const kind = $("m-kind").querySelector("input:checked").value;
-      const article = $("m-article").value;
-      const joiner = $("m-joiner").value.trim() || null; // empty = automatic
-      if (t) Object.assign(t, { name, kind, article, joiner, color: pickedColor() });
-      else state.tags.push({ id: uid(), projectId: state.currentProjectId, name, kind, article, joiner, color: pickedColor() });
+      if (t) { Object.assign(t, { name, kind, color: pickedColor() }); delete t.article; delete t.joiner; }
+      else state.tags.push({ id: uid(), projectId: state.currentProjectId, name, kind, color: pickedColor() });
     },
     onDelete: t ? () => {
       if (!confirm(`Delete tag "${t.name}"? It will be removed from all sessions.`)) return false;
