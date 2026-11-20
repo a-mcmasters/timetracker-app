@@ -29,9 +29,13 @@ Android app, works offline, and keeps all data on your device.
   Text you type yourself is never overwritten.
 - **Timer** with pause and resume, editing, and a floating mini timer. It keeps counting
   while the app is closed.
+- **Daily goal** per project (off by default): a ring next to the project name fills as you
+  track today, with a toast when you reach it. Streaks count the days you met your goal.
+- **Recaps:** stopping a session shows what it added, with records and your streak.
+  Each Monday, a weekly recap compares last week with the week before.
 - **History** grouped by day, with continue, edit and delete, plus manual entries.
 - **Statistics:**
-  - Total time, sessions, longest session and day record.
+  - Total time, sessions, longest session, day record and goal days.
   - A 30-day chart, colour-coded by activity, and time per tag.
   - A GitHub-style **activity heatmap** for the last 12 months or any year, with streaks.
 - **CSV export** of a project.

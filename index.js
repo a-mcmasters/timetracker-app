@@ -97,6 +97,58 @@ function fromInputs(date, time) {
   return new Date(y, mo - 1, d, h, mi).getTime();
 }
 
+// ---------- daily goals ----------
+// p.goals = [{from: dayStart, minutes}]; the goal for a day is the entry with the latest `from` on or before it
+// (not array order, so a clock moved backwards can't scramble it).
+function goalFor(p, day) {
+  let best = null;
+  for (const g of p.goals || []) if (g.from <= day && (!best || g.from >= best.from)) best = g;
+  return best ? best.minutes : 0;
+}
+function setGoal(p, minutes) {
+  const today = startOfDay(Date.now());
+  if (goalFor(p, today) === minutes) return;
+  p.goals = p.goals || [];
+  const same = p.goals.find((g) => g.from === today);
+  if (same) same.minutes = minutes; // same-day edit replaces
+  else p.goals.push({ from: today, minutes });
+}
+// A streak day: the goal was met, or (with no goal) any time was tracked.
+const dayOk = (p, day, ms) => { const g = goalFor(p, day); return g ? ms >= g * 60000 : ms > 0; };
+
+// Sessions of a project, plus the running one if it belongs to it. Each gets `ms`.
+function projectSpans(pid = state.currentProjectId) {
+  const spans = projectEntries(pid).map((e) => ({ ...e, ms: activeMs(e) }));
+  const r = state.running;
+  if (r && r.projectId === pid) spans.push({ ...r, end: Date.now(), ms: runningElapsed(r) });
+  return spans;
+}
+// Per-day totals; sessions count toward the day they started.
+function perDayTotals(pid) {
+  const perDay = new Map();
+  for (const e of projectSpans(pid)) { const k = startOfDay(e.start); perDay.set(k, (perDay.get(k) || 0) + e.ms); }
+  return perDay;
+}
+// One day's total for one project. Runs every second (ring, goal toast), so no copies or Dates per entry.
+function dayTotal(pid, day) {
+  const next = addDays(day, 1), r = state.running;
+  let ms = 0;
+  for (const e of state.entries) if (e.projectId === pid && e.start >= day && e.start < next) ms += activeMs(e);
+  if (r && r.projectId === pid && r.start >= day && r.start < next) ms += runningElapsed(r);
+  return ms;
+}
+
+function streakInfo(p, perDay) {
+  const today = startOfDay(Date.now());
+  let current = 0, best = 0, run = 0;
+  for (let d = dayOk(p, today, perDay.get(today) || 0) ? today : addDays(today, -1); dayOk(p, d, perDay.get(d) || 0); d = addDays(d, -1)) current++;
+  const first = Math.min(...perDay.keys(), today);
+  for (let d = first; d <= today; d = addDays(d, 1)) {
+    if (dayOk(p, d, perDay.get(d) || 0)) best = Math.max(best, ++run); else if (d !== today) run = 0;
+  }
+  return { current, best: Math.max(best, current) };
+}
+
 const pillsHtml = (tagIds) =>
   (tagIds || []).map(tagById).filter(Boolean).sort(byKind)
     .map((t) => `<span class="pill" style="--c:${t.color}">${esc(t.name)}</span>`).join("");
@@ -205,20 +257,26 @@ function togglePause() {
   renderRunning();
 }
 
-function stopTimer() {
+// `recap`: show the session recap card (an explicit Stop, not a timer replaced by a new one).
+function stopTimer(recap = false) {
   const r = state.running;
   if (!r) return;
   const end = r.pausedAt || Date.now();
+  let entry = null;
   if (end - r.start - r.pausedMs >= 1000) {
-    state.entries.push({ id: uid(), projectId: r.projectId, title: r.title, tagIds: r.tagIds, start: r.start, end, pausedMs: r.pausedMs });
+    entry = { id: uid(), projectId: r.projectId, title: r.title, tagIds: r.tagIds, start: r.start, end, pausedMs: r.pausedMs };
+    state.entries.push(entry);
   }
   state.running = null;
   $("title-input").value = "";
   save();
   render();
+  if (recap && entry) showRecap(entry, true);
 }
 
 function tick() {
+  renderGoal();
+  checkGoals();
   const r = state.running;
   if (!r) { document.title = "Time Tracker"; return; }
   const txt = fmtClock(runningElapsed());
@@ -237,6 +295,55 @@ function renderProjectBar() {
   $("project-menu").innerHTML = state.projects
     .map((x) => `<button data-pid="${x.id}" class="${x.id === p.id ? "current" : ""}"><span class="dot" style="background:${x.color}"></span>${esc(x.name)}</button>`)
     .join("");
+}
+
+// Goal ring: today's minutes against the current project's goal. Hidden (dot shown) with no goal.
+function renderGoal() {
+  const p = project(), today = startOfDay(Date.now());
+  const goal = goalFor(p, today);
+  $("goal-ring").classList.toggle("hidden", !goal);
+  $("project-dot").classList.toggle("hidden", !!goal);
+  $("goal-label").classList.toggle("hidden", !goal);
+  if (!goal) return;
+  const mins = Math.floor(dayTotal(p.id, today) / 60000);
+  const met = mins >= goal;
+  $("goal-ring").classList.toggle("met", met);
+  const arc = Math.min(mins / goal, 1), lap = Math.min(Math.max(mins / goal - 1, 0), 1);
+  $("goal-arc").setAttribute("stroke-dasharray", `${arc * 100} 100`);
+  $("goal-lap").setAttribute("stroke-dasharray", `${lap * 100} 100`);
+  // a zero-length dash with round caps still draws a dot
+  $("goal-arc").style.display = arc ? "" : "none";
+  $("goal-lap").style.display = lap ? "" : "none";
+  $("goal-mins").textContent = met ? "✓" : mins;
+  $("goal-label").textContent = `${mins} / ${goal} min ${met ? "· goal met" : "today"}`;
+  $("goal-ring").setAttribute("aria-label", `${mins} of ${goal} minutes today${met ? ", goal met" : ""}. Open Statistics`);
+}
+
+// Fire the goal-met toast once per project per day, and again if the goal is raised and met (p.goalMetOn/goalMetMins).
+function checkGoals() {
+  const today = startOfDay(Date.now());
+  for (const p of state.projects) {
+    const goal = goalFor(p, today);
+    if (!goal || (p.goalMetOn === today && p.goalMetMins >= goal) || dayTotal(p.id, today) < goal * 60000) continue;
+    p.goalMetOn = today;
+    p.goalMetMins = goal;
+    save();
+    toast(`Daily goal met: ${goal} min of ${p.name}`);
+    if (p.id === state.currentProjectId) {
+      const ring = $("goal-ring");
+      ring.classList.remove("pulse");
+      void ring.offsetWidth; // restart the animation
+      ring.classList.add("pulse");
+    }
+  }
+}
+
+let toastTimer = 0;
+function toast(text) {
+  $("toast").classList.remove("hidden"); // unhide before filling, or screen readers may skip the live region
+  $("toast").textContent = text;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $("toast").classList.add("hidden"), 4000);
 }
 
 // ---------- rendering: timer tab ----------
@@ -313,12 +420,131 @@ function renderHistory() {
   $("history-empty").classList.toggle("hidden", list.length > 0);
 }
 
+// "45 min", "2 h 05 min" — whole minutes, for recaps.
+const fmtMins = (ms) => { const m = Math.round(ms / 60000); return m >= 60 ? `${Math.floor(m / 60)} h ${pad(m % 60)} min` : `${m} min`; };
+const sum = (xs) => xs.reduce((s, x) => s + x, 0);
+
+// ---------- session recap card ----------
+let recapEntry = null, recapTimer = 0;
+
+function showRecap(e, canRepeat) {
+  const ms = activeMs(e);
+  if (ms < 60000) return; // shorter sessions are saved but get no card
+  const p = state.projects.find((x) => x.id === e.projectId);
+  const today = startOfDay(Date.now()), eday = startOfDay(e.start);
+  // Totals after the entry; "before" = the same minus this entry.
+  const after = perDayTotals(p.id);
+  const dayAfter = after.get(eday) || 0, dayBefore = dayAfter - ms;
+
+  const hl = [];
+  const others = projectEntries(p.id).filter((x) => x.id !== e.id).map(activeMs);
+  if (others.length && ms > Math.max(...others)) hl.push("New longest session");
+  // Records fire only on the session that crosses them, not on every later one that day.
+  const prevRecord = Math.max(0, ...[...after].filter(([d]) => d !== eday).map(([, v]) => v));
+  const mon = mondayOf(eday);
+  const weekOthers = Math.max(0, ...[0, 1, 2, 3, 4, 5, 6].map((i) => addDays(mon, i)).filter((d) => d !== eday).map((d) => after.get(d) || 0));
+  if (prevRecord > 0 && dayAfter > prevRecord && dayBefore <= prevRecord) hl.push("New day record");
+  else if (weekOthers > 0 && dayAfter > weekOthers && dayBefore <= weekOthers) hl.push("Busiest day this week");
+  const { current, best } = streakInfo(p, after);
+  if (eday === today && dayOk(p, today, dayAfter) && current >= 2) hl.push(`Day ${current} in a row · best ${best}`);
+  const total = sum([...after.values()]), TEN_H = 36e6;
+  if (Math.floor(total / TEN_H) > Math.floor((total - ms) / TEN_H)) hl.push(`${Math.floor(total / TEN_H) * 10} hours total`);
+
+  const goal = eday === today ? goalFor(p, today) : 0;
+  let goalHtml = "";
+  if (goal) {
+    const done = Math.floor(dayAfter / 60000);
+    const text = dayBefore < goal * 60000 && done >= goal ? "Goal met!"
+      : done >= goal ? `${done} / ${goal} min today · goal met` : `${done} / ${goal} min today, ${goal - done} min to go`;
+    goalHtml = `<div class="recap-goal"><div class="track"><div class="fill" style="width:${Math.min(done / goal, 1) * 100}%"></div></div><span>${text}</span></div>`;
+  }
+
+  recapEntry = e;
+  $("recap").classList.remove("hidden"); // unhide before filling, or screen readers may skip the live region
+  $("recap").innerHTML = `
+    <div class="recap-head"><span class="recap-plus">+${fmtMins(ms)}</span><span class="recap-title">${esc(e.title)}</span></div>
+    <div class="pill-row">${pillsHtml(e.tagIds)}</div>
+    ${goalHtml}
+    ${hl.slice(0, 2).map((h) => `<div class="recap-hl">★ ${esc(h)}</div>`).join("")}
+    <div class="recap-actions">
+      ${canRepeat ? `<button type="button" class="btn btn-start" data-act="again">▶ Do it again</button>` : ""}
+      <button type="button" class="btn btn-ghost" data-act="edit">Edit</button>
+    </div>`;
+  clearTimeout(recapTimer);
+  recapTimer = setTimeout(closeRecap, 8000);
+}
+function closeRecap() { $("recap").classList.add("hidden"); clearTimeout(recapTimer); recapEntry = null; }
+
+// ---------- weekly recap ----------
+let weeklyForced = false; // opened from the "Last week" link on Statistics
+
+function weekSummary(p, monday) {
+  const pid = p.id, perDay = perDayTotals(pid);
+  const next = addDays(monday, 7);
+  const days = [0, 1, 2, 3, 4, 5, 6].map((i) => {
+    const d = addDays(monday, i), ms = perDay.get(d) || 0, goal = goalFor(p, d);
+    return { d, ms, goal, met: !!goal && dayOk(p, d, ms) };
+  });
+  const total = sum(days.map((x) => x.ms));
+  const prev = sum([1, 2, 3, 4, 5, 6, 7].map((i) => perDay.get(addDays(monday, -i)) || 0));
+  const weeks = new Map(); // earlier weeks' totals
+  for (const [d, ms] of perDay) if (d < monday) weeks.set(mondayOf(d), (weeks.get(mondayOf(d)) || 0) + ms);
+  const sessions = projectSpans(pid).filter((e) => e.start >= monday && e.start < next);
+  const order = projectTags(pid), groups = new Map();
+  for (const e of sessions) { const g = groupOf(e, order); groups.set(g, (groups.get(g) || 0) + e.ms); }
+  const top = [...groups].sort((a, b) => b[1] - a[1])[0];
+  return {
+    total, prev, days, sessions: sessions.length,
+    bestDay: days.reduce((a, b) => (b.ms > a.ms ? b : a)),
+    top: top && { tag: top[0], ms: top[1] },
+    bestEver: weeks.size > 0 && total > Math.max(...weeks.values()),
+  };
+}
+
+function renderWeekly() {
+  const p = project(), monday = addDays(mondayOf(Date.now()), -7);
+  // shortcut: a project with no sessions before this week gets no card (nothing to recap yet).
+  const hasHistory = projectEntries().some((e) => e.start < addDays(monday, 7));
+  const show = weeklyForced || (p.recapSeenWeek !== monday && hasHistory);
+  $("weekly").classList.toggle("hidden", !show);
+  if (!show) return;
+  const w = weekSummary(p, monday);
+  const close = `<button type="button" class="icon-btn" data-act="weekly-close" title="Dismiss">✕</button>`;
+  if (!w.total) {
+    $("weekly").innerHTML = `<div class="weekly-head"><h2>Last week</h2>${close}</div>
+      <p>No time tracked last week. Start with 10 minutes today?</p>
+      ${state.running ? "" : `<button type="button" class="btn btn-start" data-act="weekly-start">▶ Start</button>`}`;
+    return;
+  }
+  const diff = w.total - w.prev;
+  const delta = w.prev ? `<span class="delta ${diff >= 0 ? "up" : "down"}">${diff >= 0 ? "+" : "−"}${fmtMins(Math.abs(diff))} (${diff >= 0 ? "+" : "−"}${Math.abs(Math.round((diff / w.prev) * 100))}%)</span>` : "";
+  const goalDays = w.days.filter((x) => x.goal);
+  const rows = [
+    goalDays.length && ["Goal days", `${goalDays.filter((x) => x.met).length} / ${goalDays.length}`],
+    ["Best day", `${new Date(w.bestDay.d).toLocaleDateString("en-US", { weekday: "long" })}, ${fmtMins(w.bestDay.ms)}`],
+    w.top && ["Top activity", `${w.top.tag ? esc(w.top.tag.name) : "No tag"}, ${fmtMins(w.top.ms)} (${Math.round((w.top.ms / w.total) * 100)}%)`],
+    ["Sessions", `${w.sessions}, average ${fmtMins(w.total / w.sessions)}`],
+  ].filter(Boolean);
+  $("weekly").innerHTML = `
+    <div class="weekly-head"><h2>Last week · ${fmtShortDate(monday)} – ${fmtShortDate(addDays(monday, 6))}</h2>${close}</div>
+    <div class="weekly-total">${fmtMins(w.total)} ${delta}</div>
+    <div class="weekly-dots">${w.days.map((x) => `<span><i class="${x.ms ? "on" : ""} ${x.met ? "met" : ""}"></i>${"MTWTFSS"[(new Date(x.d).getDay() + 6) % 7]}</span>`).join("")}</div>
+    <dl class="weekly-rows">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
+    ${w.bestEver ? `<p class="weekly-best">★ Your best week ever</p>` : ""}`;
+}
+
+function dismissWeekly() {
+  project().recapSeenWeek = addDays(mondayOf(Date.now()), -7);
+  weeklyForced = false;
+  save();
+  renderWeekly();
+}
+
 // ---------- rendering: statistics tab ----------
-function projectSpans() {
-  const spans = projectEntries().map((e) => ({ ...e, ms: activeMs(e) }));
-  const r = state.running;
-  if (r && r.projectId === state.currentProjectId) spans.push({ ...r, end: Date.now(), ms: runningElapsed(r) });
-  return spans;
+// The tag a session is grouped under: its first activity, else its first tag, else null (untagged).
+function groupOf(e, order = projectTags()) {
+  const tags = (e.tagIds || []).map(tagById).filter(Boolean).sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  return tags.find(isActivity) || tags[0] || null;
 }
 
 function renderStats() {
@@ -331,9 +557,7 @@ function renderStats() {
   $("s-longest").textContent = longest ? fmtDur(longest.ms) : "—";
   $("s-longest-sub").textContent = longest ? longest.title : "";
 
-  // Per-day totals (sessions are attributed to the day they started)
-  const perDay = new Map();
-  for (const e of spans) { const k = startOfDay(e.start); perDay.set(k, (perDay.get(k) || 0) + e.ms); }
+  const perDay = perDayTotals(state.currentProjectId);
   let record = null;
   for (const [day, ms] of perDay) if (!record || ms > record.ms) record = { day, ms };
   $("s-record").textContent = record ? fmtDur(record.ms) : "—";
@@ -344,15 +568,11 @@ function renderStats() {
   // Last 30 days chart, each bar stacked by activity (or content tag if it has no activity)
   const today = startOfDay(Date.now());
   const order = projectTags(); // activities first, in the same order as the tag picker
-  const groupOf = (e) => {
-    const tags = (e.tagIds || []).map(tagById).filter(Boolean).sort((a, b) => order.indexOf(a) - order.indexOf(b));
-    return tags.find(isActivity) || tags[0] || null; // null = untagged
-  };
   const perDayGroup = new Map(); // day -> Map(tag|null -> ms)
   for (const e of spans) {
     const k = startOfDay(e.start);
     if (!perDayGroup.has(k)) perDayGroup.set(k, new Map());
-    const g = perDayGroup.get(k), tag = groupOf(e);
+    const g = perDayGroup.get(k), tag = groupOf(e, order);
     g.set(tag, (g.get(tag) || 0) + e.ms);
   }
   const rank = (tag) => (tag ? order.indexOf(tag) : order.length);
@@ -372,6 +592,12 @@ function renderStats() {
     })
     .join("");
   $("chart-from").textContent = fmtShortDate(days[0].d);
+
+  // Goal days in the same 30 days: met out of days with a goal (today only once met). Hidden if none.
+  const p = project();
+  const goalDays = days.filter(({ d, ms }) => goalFor(p, d) && (d !== today || dayOk(p, d, ms)));
+  $("s-goal-card").classList.toggle("hidden", !goalDays.length);
+  $("s-goal").textContent = `${goalDays.filter(({ d, ms }) => dayOk(p, d, ms)).length} / ${goalDays.length}`;
   $("chart-legend").innerHTML = [...used].sort((a, b) => rank(a) - rank(b))
     .map((tag) => `<span><i style="background:${tag ? tag.color : "#777"}"></i>${tag ? esc(tag.name) : "No tag"}</span>`).join("");
 
@@ -405,7 +631,7 @@ function renderHeatRange(perDay) {
 
 function renderHeatmap(perDay) {
   renderHeatRange(perDay);
-  const today = startOfDay(Date.now());
+  const today = startOfDay(Date.now()), p = project();
   let from, to; // inclusive day range shown
   if (heatRange === "last") { to = today; from = addDays(addDays(today, 1), -365); }
   else { const y = Number(heatRange); from = new Date(y, 0, 1).getTime(); to = Math.min(new Date(y, 11, 31).getTime(), today); }
@@ -423,21 +649,24 @@ function renderHeatmap(perDay) {
       if (date.getDate() <= 7 && date.getMonth() !== lastMonth && !label) { label = months[date.getMonth()]; lastMonth = date.getMonth(); }
       const ms = perDay.get(d) || 0;
       const when = date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
-      cells.push(`<i data-l="${heatLevel(ms)}" data-tip="${ms ? fmtDur(ms) : "No time"} on ${when}"${d === today ? ' class="today"' : ""}></i>`);
+      const met = goalFor(p, d) && dayOk(p, d, ms) ? " · goal met" : "";
+      cells.push(`<i data-l="${heatLevel(ms)}" data-tip="${ms ? fmtDur(ms) : "No time"} on ${when}${met}"${d === today ? ' class="today"' : ""}></i>`);
     }
     cols.push(`<div class="heat-col"><span class="heat-month">${label}</span>${cells.join("")}</div>`);
   }
   $("heatmap").innerHTML = cols.join("");
 
-  // Summary: total, active days, current and longest streak within the range
+  // Summary: total, active days, and streaks (goal days, see dayOk). The 12-month view shows the
+  // all-time best so a reset never hides the record; a year view shows that year's longest.
   let total = 0, active = 0, longest = 0, run = 0;
   for (let d = from; d <= to; d = addDays(d, 1)) {
     const ms = perDay.get(d) || 0;
     total += ms;
-    if (ms) { active++; run++; longest = Math.max(longest, run); } else run = 0;
+    if (ms) active++;
+    if (dayOk(p, d, ms)) longest = Math.max(longest, ++run); else if (d !== today) run = 0;
   }
-  let current = 0;
-  for (let d = perDay.get(today) ? today : addDays(today, -1); perDay.get(d); d = addDays(d, -1)) current++;
+  const { current, best } = streakInfo(p, perDay);
+  if (heatRange === "last") longest = best;
   const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
   const label = heatRange === "last" ? "in the last 12 months" : `in ${heatRange}`;
   $("heat-summary").innerHTML =
@@ -454,7 +683,7 @@ function render() {
   renderProjectBar();
   renderTagPicker();
   renderRunning();
-  if (activeTab === "timer") renderHistory();
+  if (activeTab === "timer") { renderHistory(); renderWeekly(); }
   else renderStats();
 }
 
@@ -515,19 +744,42 @@ function wireTagToggles() {
 }
 const pickedTags = () => [...$("m-tags").querySelectorAll(".chip.on [data-tag]")].map((b) => b.dataset.tag);
 
+const GOAL_PRESETS = [0, 15, 30, 45, 60, 90, 120];
+
 function editProject(p) {
+  const goal = p ? goalFor(p, startOfDay(Date.now())) : 0;
+  const custom = !GOAL_PRESETS.includes(goal);
   openModal({
     title: p ? "Edit project" : "New project",
     okText: p ? "Save" : "Create",
     body: `<label class="field">Name <input id="m-name" class="input" maxlength="60" required value="${esc(p?.name || "")}"></label>
-           <div class="field">Color ${swatchHtml(p?.color || COLORS[Math.floor(Math.random() * COLORS.length)])}</div>`,
-    onOpen: wireSwatches,
+           <div class="field">Color ${swatchHtml(p?.color || COLORS[Math.floor(Math.random() * COLORS.length)])}</div>
+           <div class="field">Daily goal
+             <div class="row2">
+               <select id="m-goal" class="input" aria-label="Daily goal">${GOAL_PRESETS.map((m) => `<option value="${m}" ${!custom && m === goal ? "selected" : ""}>${m ? m + " min" : "Off"}</option>`).join("")}
+                 <option value="custom" ${custom ? "selected" : ""}>Custom…</option></select>
+               <input id="m-goal-custom" aria-label="Daily goal in minutes" class="input ${custom ? "" : "hidden"}" type="number" min="5" max="720" step="1" required placeholder="Minutes (5–720)" value="${custom ? goal : ""}" ${custom ? "" : "disabled"}>
+             </div>
+           </div>`,
+    onOpen: () => {
+      wireSwatches();
+      $("m-goal").addEventListener("change", () => {
+        const on = $("m-goal").value === "custom";
+        $("m-goal-custom").disabled = !on; // disabled inputs skip form validation
+        $("m-goal-custom").classList.toggle("hidden", !on);
+        if (on) $("m-goal-custom").focus();
+      });
+    },
     onOk: () => {
       const name = $("m-name").value.trim();
       if (!name) return false;
-      if (p) Object.assign(p, { name, color: pickedColor() });
+      const sel = $("m-goal").value;
+      const minutes = sel === "custom" ? Number($("m-goal-custom").value) : Number(sel);
+      if (sel === "custom" && !(Number.isInteger(minutes) && minutes >= 5 && minutes <= 720)) return false;
+      if (p) { Object.assign(p, { name, color: pickedColor() }); setGoal(p, minutes); }
       else {
         const np = { id: uid(), name, color: pickedColor() };
+        setGoal(np, minutes);
         state.projects.push(np);
         state.currentProjectId = np.id;
         state.draftTagIds = [];
@@ -599,7 +851,11 @@ function editEntry(e) {
       const pausedMs = Math.min(Math.max(0, Number($("m-paused").value) || 0) * 60000, en - s);
       const data = { title: $("m-title").value.trim() || "Untitled", tagIds: pickedTags(), start: s, end: en, pausedMs };
       if (e) Object.assign(e, data);
-      else state.entries.push({ id: uid(), projectId: state.currentProjectId, ...data });
+      else {
+        const ne = { id: uid(), projectId: state.currentProjectId, ...data };
+        state.entries.push(ne);
+        showRecap(ne, false);
+      }
     },
     onDelete: e ? () => { state.entries = state.entries.filter((x) => x.id !== e.id); } : null,
   });
@@ -665,6 +921,7 @@ $("project-menu").addEventListener("click", (ev) => {
   state.currentProjectId = b.dataset.pid;
   state.draftTagIds = [];
   visibleDays = 14;
+  weeklyForced = false;
   $("project-menu").classList.add("hidden");
   save();
   render();
@@ -692,7 +949,31 @@ $("start-form").addEventListener("submit", (ev) => {
   startTimer($("title-input").value, state.draftTagIds);
 });
 $("pause-btn").addEventListener("click", togglePause);
-$("stop-btn").addEventListener("click", stopTimer);
+$("stop-btn").addEventListener("click", () => stopTimer(true));
+$("goal-ring").addEventListener("click", () => switchTab("stats"));
+
+$("recap").addEventListener("click", (ev) => {
+  const act = ev.target.closest("[data-act]")?.dataset.act, e = recapEntry;
+  if (!act || !e) return;
+  closeRecap();
+  if (act === "again") startTimer(e.title, e.tagIds || []);
+  else editEntry(e);
+});
+// Close on a tap outside (pointerdown, so the Stop click that opened it doesn't) or a swipe down.
+document.addEventListener("pointerdown", (ev) => { if (!$("recap").contains(ev.target)) closeRecap(); });
+let recapTouchY = 0;
+$("recap").addEventListener("touchstart", (ev) => { recapTouchY = ev.touches[0].clientY; }, { passive: true });
+$("recap").addEventListener("touchend", (ev) => { if (ev.changedTouches[0].clientY - recapTouchY > 40) closeRecap(); });
+// Don't auto-close under someone reaching for a button; Escape closes it from the keyboard.
+for (const t of ["focusin", "pointerenter"]) $("recap").addEventListener(t, () => clearTimeout(recapTimer));
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeRecap(); });
+
+$("weekly").addEventListener("click", (ev) => {
+  const act = ev.target.closest("[data-act]")?.dataset.act;
+  if (act === "weekly-close") dismissWeekly();
+  else if (act === "weekly-start") { dismissWeekly(); startTimer($("title-input").value, state.draftTagIds); }
+});
+$("weekly-btn").addEventListener("click", () => { weeklyForced = true; switchTab("timer"); });
 $("running-edit").addEventListener("click", editRunning);
 $("manual-btn").addEventListener("click", () => editEntry(null));
 $("export-btn").addEventListener("click", exportCsv);
@@ -761,6 +1042,7 @@ setInterval(() => { if (state.running && activeTab === "stats") renderStats(); }
 // Android back button: close dialogs/menus, then return to the Timer tab. Returns true if handled.
 function handleBack() {
   if ($("modal").open) { closeModal(); return true; }
+  if (!$("recap").classList.contains("hidden")) { closeRecap(); return true; }
   if (!$("project-menu").classList.contains("hidden")) { $("project-menu").classList.add("hidden"); return true; }
   if (activeTab !== "timer") { switchTab("timer"); return true; }
   return false;
