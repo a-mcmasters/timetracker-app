@@ -7,6 +7,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SDK="${ANDROID_HOME:?Set ANDROID_HOME to your Android SDK}"
 BT="$SDK/build-tools/35.0.0"
+# On Windows (Git Bash) d8 and apksigner are .bat files.
+D8="$BT/d8"; [ -f "$D8" ] || D8="$D8.bat"
+APKSIGNER="$BT/apksigner"; [ -f "$APKSIGNER" ] || APKSIGNER="$APKSIGNER.bat"
 JAR="$SDK/platforms/android-34/android.jar"
 OUT="$HERE/build"
 KEYSTORE="${KEYSTORE:-$HERE/timetracker.keystore}"
@@ -28,8 +31,9 @@ cp "$HERE/../index.html" "$HERE/../index.js" "$HERE/../styles.css" "$OUT/assets/
 javac -source 8 -target 8 -nowarn -Xlint:-options -bootclasspath "$JAR" -classpath "$JAR" \
   -d "$OUT/classes" $(find "$HERE/src" "$OUT/gen" -name '*.java')
 (cd "$OUT/classes" && jar cf "$OUT/classes.jar" .)
-"$BT/d8" --min-api 24 --lib "$JAR" --output "$OUT/dex" "$OUT/classes.jar"
-(cd "$OUT/dex" && zip -q -u "$OUT/unsigned.apk" classes.dex)
+"$D8" --min-api 24 --lib "$JAR" --output "$OUT/dex" "$OUT/classes.jar"
+python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1], 'a').write(sys.argv[2], 'classes.dex')" \
+  "$OUT/unsigned.apk" "$OUT/dex/classes.dex"
 
 "$BT/zipalign" -f 4 "$OUT/unsigned.apk" "$OUT/aligned.apk"
 
@@ -40,7 +44,7 @@ if [ ! -f "$KEYSTORE" ]; then
     -alias timetracker -keyalg RSA -keysize 2048 -validity 10000 \
     -dname "CN=Time Tracker" >/dev/null 2>&1
 fi
-"$BT/apksigner" sign --ks "$KEYSTORE" --ks-pass pass:timetracker --key-pass pass:timetracker \
+"$APKSIGNER" sign --ks "$KEYSTORE" --ks-pass pass:timetracker --key-pass pass:timetracker \
   --out "$HERE/../TimeTracker.apk" "$OUT/aligned.apk"
-"$BT/apksigner" verify "$HERE/../TimeTracker.apk"
+"$APKSIGNER" verify "$HERE/../TimeTracker.apk"
 echo "Built $(cd "$HERE/.." && pwd)/TimeTracker.apk"
