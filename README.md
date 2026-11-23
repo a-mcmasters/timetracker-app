@@ -6,7 +6,7 @@ A small time tracker for language learning (or anything else): start a timer, ta
 you're doing, and see your history and statistics. It runs in any browser and as an
 Android app, works offline, and keeps all data on your device.
 
-**[Download the latest Android app (TimeTracker.apk)](https://github.com/a-mcmasters/timetracker-app/releases/latest/download/TimeTracker.apk)** · [All releases and what's new](https://github.com/a-mcmasters/timetracker-app/releases)
+**[Download TimeTracker.apk with timer notifications](https://github.com/a-mcmasters/timetracker-app/raw/refs/heads/main/TimeTracker.apk)** · [Release notes and previous downloads](https://github.com/a-mcmasters/timetracker-app/releases)
 
 ## Screenshots
 
@@ -28,7 +28,7 @@ Android app, works offline, and keeps all data on your device.
   *Speaking with a tutor*, *Reading comics*. It works for tags you create too.
   Text you type yourself is never overwritten.
 - **Timer** with pause and resume, editing, and a floating mini timer. It keeps counting
-  while the app is closed.
+  while the app is closed. On Android, you can pause, resume, or stop from the notification shade.
 - **Daily goal** per project (off by default): a ring next to the project name fills as you
   track today, with a toast when you reach it. Streaks count the days you met your goal.
 - **Recaps:** stopping a session shows what it added, with records and your streak.
@@ -51,6 +51,17 @@ allow installs from it.
 
 To **update** the app, install a newer APK over the existing one and choose **Update**.
 Don't uninstall first: uninstalling deletes the app's data.
+
+### Timer notifications
+
+The APK from the GitHub v1.6 release does not include timer notifications. Use the download
+at the top of this page if **Allow notifications** is greyed out on that release. Android may
+still show **1.6** after the update because the two builds share a version number.
+
+Open Time Tracker and start a timer. On Android 13 or later, tap **Allow** when asked for
+notification permission. Swipe down to find **Running timer**, with controls to pause,
+resume, or stop the timer. If you previously declined the prompt, turn on **Allow notifications**
+in **Settings → Apps → Time Tracker → Notifications**.
 
 ### Building the APK
 
