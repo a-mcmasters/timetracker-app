@@ -12,6 +12,7 @@ import android.widget.Toast;
 
 /** Hosts the Time Tracker web app (bundled in assets/) in a full-screen WebView. */
 public class MainActivity extends Activity {
+    static MainActivity current; // lets TimerNotification reach the open page
     private WebView webView;
 
     @Override
@@ -39,6 +40,17 @@ public class MainActivity extends Activity {
         if (savedInstanceState != null) webView.restoreState(savedInstanceState);
         else webView.loadUrl("file:///android_asset/index.html");
         setContentView(webView);
+        current = this;
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (current == this) current = null;
+        super.onDestroy();
+    }
+
+    void applyNotificationActions() {
+        webView.evaluateJavascript("window.applyNotificationActions && applyNotificationActions();", null);
     }
 
     @Override
@@ -52,6 +64,12 @@ public class MainActivity extends Activity {
         super.onResume();
         webView.onResume();
         // Re-render so the clock catches up after the app was in the background.
+        webView.evaluateJavascript("window.applyNotificationActions && applyNotificationActions(); window.render && render();", null);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        // Notification permission just granted: re-render so the running timer's notification gets posted.
         webView.evaluateJavascript("window.render && render();", null);
     }
 

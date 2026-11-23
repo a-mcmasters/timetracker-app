@@ -24,7 +24,7 @@ function freshState() {
     projects: [{ id: projectId, name: "Learning Japanese", color: "#e53935" }],
     tags: DEFAULT_TAGS.map(([name, color, kind]) => ({ id: uid(), projectId, name, color, kind })),
     entries: [], // {id, projectId, title, tagIds, start, end, pausedMs}
-    running: null, // {projectId, title, tagIds, start, pausedMs, pausedAt}
+    running: null, // {id, projectId, title, tagIds, start, pausedMs, pausedAt}
     currentProjectId: projectId,
     draftTagIds: [],
   };
@@ -36,6 +36,7 @@ function loadState() {
     if (s && Array.isArray(s.projects) && s.projects.length) {
       // Older saves have no tag kinds: treat the known activity words as activities.
       for (const t of s.tags) if (!t.kind) t.kind = ACTIVITY_NAMES.has(t.name.toLowerCase()) ? "activity" : "content";
+      if (s.running && !s.running.id) s.running.id = uid(); // recorded before running timers had ids
       return s;
     }
   } catch { /* fall through */ }
@@ -43,8 +44,9 @@ function loadState() {
 }
 
 let state = loadState();
+// Returns false if the data couldn't be stored.
 function save() {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch { /* storage unavailable */ }
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); return true; } catch { return false; }
 }
 
 let activeTab = "timer";
@@ -235,8 +237,10 @@ function applyAutoTitle(input, prevTagIds, nextTagIds) {
 
 // ---------- timer ----------
 function startTimer(title, tagIds) {
+  applyNotificationActions(); // a notification press not yet applied happened first
   if (state.running) stopTimer();
   state.running = {
+    id: uid(), // identifies this recording to the Android notification's buttons
     projectId: state.currentProjectId,
     title: title.trim() || "Untitled",
     tagIds: [...tagIds],
@@ -249,8 +253,11 @@ function startTimer(title, tagIds) {
 }
 
 function togglePause() {
+  // What the tapped button showed, before queued notification presses change the timer under it.
+  const shown = state.running, wantPause = !shown?.pausedAt;
+  applyNotificationActions();
   const r = state.running;
-  if (!r) return;
+  if (!r || r.id !== shown.id || !r.pausedAt !== wantPause) return; // already done from the notification
   if (r.pausedAt) { r.pausedMs += Date.now() - r.pausedAt; r.pausedAt = null; }
   else r.pausedAt = Date.now();
   save();
@@ -258,10 +265,10 @@ function togglePause() {
 }
 
 // `recap`: show the session recap card (an explicit Stop, not a timer replaced by a new one).
-function stopTimer(recap = false) {
+function stopTimer(recap = false, at = Date.now()) {
   const r = state.running;
   if (!r) return;
-  const end = r.pausedAt || Date.now();
+  const end = r.pausedAt || at;
   let entry = null;
   if (end - r.start - r.pausedMs >= 1000) {
     entry = { id: uid(), projectId: r.projectId, title: r.title, tagIds: r.tagIds, start: r.start, end, pausedMs: r.pausedMs };
@@ -376,7 +383,36 @@ function renderRunning() {
   }
   // Mini timer: visible when running and the full timer isn't on screen.
   $("mini-timer").classList.toggle("hidden", !r || (activeTab === "timer" && showRunning));
+  syncNotification();
   tick();
+}
+
+// Android app: mirror the running timer in an ongoing notification with Pause/Resume and Stop buttons.
+function syncNotification() {
+  const bridge = window.AndroidBridge, r = state.running;
+  if (!bridge) return;
+  if (r) bridge.showRunning(r.id, r.title, r.start + r.pausedMs, r.pausedAt || 0);
+  else bridge.clearRunning();
+}
+
+// Replays notification button presses (possibly made while the app was closed) at the times they happened.
+// Presses leave the native queue only once the result is saved; `notifSeq` (saved with the timer)
+// makes a replay after a crash in between skip the presses already applied.
+function applyNotificationActions() {
+  const bridge = window.AndroidBridge, events = bridge?.peekNotificationEvents();
+  if (!events) return;
+  for (const ev of events.split(",")) {
+    const [kind, time, timerId, seqText] = ev.split(":"), t = Number(time), seq = Number(seqText);
+    if (!(seq > (state.notifSeq || 0))) continue;
+    state.notifSeq = seq;
+    const r = state.running;
+    if (!r || r.id !== timerId || !t) continue; // meant for a timer that has since ended
+    if (kind === "p" && !r.pausedAt) r.pausedAt = t;
+    else if (kind === "r" && r.pausedAt) { r.pausedMs += Math.max(0, t - r.pausedAt); r.pausedAt = null; }
+    else if (kind === "s") stopTimer(true, Math.max(t, r.start));
+  }
+  if (save()) bridge.ackNotificationEvents(events); // not saved: keep them queued, retry on next resume
+  render();
 }
 
 function renderHistory() {
@@ -862,6 +898,7 @@ function editEntry(e) {
 }
 
 function editRunning() {
+  applyNotificationActions();
   const r = state.running;
   if (!r) return;
   openModal({
@@ -871,6 +908,8 @@ function editRunning() {
            <label class="field">Started at <input id="m-start" class="input" type="time" value="${fmtHM(r.start)}"></label>`,
     onOpen: wireTagToggles,
     onOk: () => {
+      applyNotificationActions();
+      if (state.running !== r) return toast("This session was stopped from the notification. Edit it in the history instead.");
       r.title = $("m-title").value.trim() || "Untitled";
       r.tagIds = pickedTags();
       let s = fromInputs(toDateInput(r.start), $("m-start").value);
@@ -949,7 +988,7 @@ $("start-form").addEventListener("submit", (ev) => {
   startTimer($("title-input").value, state.draftTagIds);
 });
 $("pause-btn").addEventListener("click", togglePause);
-$("stop-btn").addEventListener("click", () => stopTimer(true));
+$("stop-btn").addEventListener("click", () => { applyNotificationActions(); stopTimer(true); });
 $("goal-ring").addEventListener("click", () => switchTab("stats"));
 
 $("recap").addEventListener("click", (ev) => {
@@ -1049,4 +1088,5 @@ function handleBack() {
 }
 
 save(); // persist the default project/tags on first visit so their ids stay stable
+applyNotificationActions();
 render();
