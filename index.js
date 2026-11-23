@@ -30,9 +30,15 @@ function freshState() {
   };
 }
 
+// A save that couldn't be read is copied before the fresh state replaces it (see loadState and startup).
+let brokenSave = null; // its raw text, offered to the user at startup
+let saveBlocked = false; // no room for a copy: never overwrite the only one
+
 function loadState() {
+  let raw = null;
   try {
-    const s = JSON.parse(localStorage.getItem(STORE_KEY));
+    raw = localStorage.getItem(STORE_KEY);
+    const s = JSON.parse(raw);
     if (s && Array.isArray(s.projects) && s.projects.length) {
       // Older saves have no tag kinds: treat the known activity words as activities.
       for (const t of s.tags) if (!t.kind) t.kind = ACTIVITY_NAMES.has(t.name.toLowerCase()) ? "activity" : "content";
@@ -40,12 +46,21 @@ function loadState() {
       return s;
     }
   } catch { /* fall through */ }
+  if (raw) {
+    brokenSave = raw;
+    // One key per failure, so a later one never replaces an earlier copy.
+    try { localStorage.setItem(`${STORE_KEY}.broken.${Date.now()}`, raw); } catch { saveBlocked = true; }
+  }
   return freshState();
 }
 
 let state = loadState();
 // Returns false if the data couldn't be stored.
 function save() {
+  if (saveBlocked) { // warn on every save: the app keeps working, but nothing sticks
+    toast("Not saved: old data couldn't be read and storage is too full to keep a copy of it.");
+    return false;
+  }
   try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); return true; } catch { return false; }
 }
 
@@ -93,6 +108,12 @@ const fmtHM = (t) => { const d = new Date(t); return `${pad(d.getHours())}:${pad
 const fmtDate = (t) => new Date(t).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 const fmtShortDate = (t) => new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 const toDateInput = (t) => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+// "2026-11-23T00:30:00+01:00": local date and time like the app shows, plus the offset so the moment is exact
+// (the hour repeated when clocks go back stays unambiguous).
+function isoLocal(t) {
+  const d = new Date(t), off = -d.getTimezoneOffset(), abs = Math.abs(off);
+  return `${toDateInput(t)}T${fmtHM(t)}:${pad(d.getSeconds())}${off < 0 ? "-" : "+"}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+}
 function fromInputs(date, time) {
   const [y, mo, d] = date.split("-").map(Number);
   const [h, mi] = time.split(":").map(Number);
@@ -905,16 +926,27 @@ function editRunning() {
     title: "Edit running session",
     body: `<label class="field">Title <input id="m-title" class="input" maxlength="120" value="${esc(r.title)}"></label>
            <div class="field">Tags ${tagToggleHtml(r.tagIds, r.projectId)}</div>
-           <label class="field">Started at <input id="m-start" class="input" type="time" value="${fmtHM(r.start)}"></label>`,
+           <label class="field">Started at <input id="m-start" class="input" type="time" required value="${fmtHM(r.start)}"></label>`,
     onOpen: wireTagToggles,
     onOk: () => {
       applyNotificationActions();
       if (state.running !== r) return toast("This session was stopped from the notification. Edit it in the history instead.");
+      const time = $("m-start").value;
+      if (!time) return false; // empty time: keep the dialog open, don't wipe the session
+      if (time !== fmtHM(r.start)) {
+        // The latest past moment showing that time: today, or yesterday if that's still ahead.
+        // (Built from yesterday's date, not today minus 24 h, so a clock change can't shift it.)
+        const now = Date.now();
+        let s = fromInputs(toDateInput(now), time);
+        if (s > now) s = fromInputs(toDateInput(addDays(now, -1)), time);
+        if ((r.pausedAt || now) - s - r.pausedMs < 1000) { // Stop would discard the session
+          toast("That start leaves no tracked time. Pick an earlier time.");
+          return false;
+        }
+        r.start = s;
+      }
       r.title = $("m-title").value.trim() || "Untitled";
       r.tagIds = pickedTags();
-      let s = fromInputs(toDateInput(r.start), $("m-start").value);
-      if (s > Date.now()) s = addDays(s, -1);
-      r.start = s;
     },
   });
 }
@@ -925,7 +957,7 @@ function exportCsv() {
   const rows = [["title", "tags", "start", "end", "active_minutes", "paused_minutes"]];
   for (const e of projectEntries().sort((a, b) => a.start - b.start)) {
     rows.push([e.title, (e.tagIds || []).map((id) => tagById(id)?.name).filter(Boolean).join("; "),
-      new Date(e.start).toISOString(), new Date(e.end).toISOString(),
+      isoLocal(e.start), isoLocal(e.end),
       Math.round(activeMs(e) / 60000), Math.round((e.pausedMs || 0) / 60000)]);
   }
   const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -1087,6 +1119,11 @@ function handleBack() {
   return false;
 }
 
+if (brokenSave) {
+  // Android: also a file in Downloads, since nothing else can reach the app's storage.
+  window.AndroidBridge?.saveFile(`timetracker-unreadable-save-${toDateInput(Date.now())}.json`, brokenSave);
+  if (!saveBlocked) toast("Saved data couldn't be read. A copy was kept."); // blocked: save() below warns
+}
 save(); // persist the default project/tags on first visit so their ids stay stable
 applyNotificationActions();
 render();
