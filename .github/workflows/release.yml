@@ -18,8 +18,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the stale-APK check below needs the history
 
       - name: Work out the version
+        shell: bash # adds pipefail, so a failing unzip can't hide behind cmp
         run: |
           NAME=$(grep -o 'android:versionName="[^"]*"' android/AndroidManifest.xml | cut -d'"' -f2)
           TAG="v$NAME"
@@ -27,6 +30,16 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match app version $NAME"; exit 1
           fi
           test -f TimeTracker.apk || { echo "TimeTracker.apk is missing"; exit 1; }
+          # The APK must contain the current web app, or the release ships old code under new notes.
+          # Line endings are ignored: a Windows checkout builds the APK with CRLF, CI checks out LF.
+          for f in index.html index.js styles.css; do
+            unzip -p TimeTracker.apk "assets/$f" | tr -d '\r' | cmp - <(tr -d '\r' < "$f") ||
+              { echo "TimeTracker.apk is stale ($f differs): run android/build.sh"; exit 1; }
+          done
+          # ...and the current Android code: nothing it is built from may change after the APK was last committed.
+          APK_COMMIT=$(git log -1 --format=%H -- TimeTracker.apk)
+          git diff --quiet "$APK_COMMIT" HEAD -- android/src android/res android/AndroidManifest.xml android/make_icons.py android/build.sh ||
+            { echo "Android code changed since TimeTracker.apk was built: run android/build.sh"; exit 1; }
           test -f "docs/releases/$TAG.md" || { echo "Release notes docs/releases/$TAG.md are missing"; exit 1; }
           echo "TAG=$TAG" >> "$GITHUB_ENV"
 
